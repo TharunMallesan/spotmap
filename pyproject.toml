@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "spotmap"
+version = "0.1.0"
+description = "Interactive epidemiological spot maps for India"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+authors = [
+  { name = "Tharun Mallesan", email = "tharunmallesan@gmail.com" }
+]
+keywords = ["epidemiology", "spot map", "india", "geospatial", "folium", "case-control"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Topic :: Scientific/Engineering :: GIS",
+  "Topic :: Scientific/Engineering :: Medical Science Apps.",
+  "Intended Audience :: Science/Research",
+]
+dependencies = [
+  "folium>=0.14",
+  "geopandas>=0.13",
+  "numpy>=1.24",
+  "pandas>=2.0",
+  "shapely>=2.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/TharunMallesan/spotmap"
+Repository = "https://github.com/TharunMallesan/spotmap"
+"Bug Tracker" = "https://github.com/TharunMallesan/spotmap/issues"
+
+[project.scripts]
+spotmap = "spotmap.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["spotmap"]
+
+[tool.hatch.build.targets.sdist]
+include = ["spotmap/", "README.md", "LICENSE", "pyproject.toml"]

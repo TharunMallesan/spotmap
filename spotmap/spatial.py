@@ -1,56 +1,94 @@
-"""
-spotmap/spatial.py
-==================
-Handles:
-  - Spatial join of points with district and state boundaries
-  - Map mode detection (district / state / india view)
-  - Boundary cropping to the area of interest
-"""
+"""Boundary loading and spatial-join utilities."""
 
-import numpy as np
+import os
+from pathlib import Path
+
 import geopandas as gpd
+import numpy as np
+from shapely.geometry import Point
 
-from spotmap.exceptions import NoDataError
+os.environ.setdefault("SHAPE_RESTORE_SHX", "YES")
 
-# =========================================================
-# PUBLIC: SPATIAL JOIN
-# =========================================================
+_DATA_DIR = Path(__file__).parent / "data"
+_STATE_FGB = _DATA_DIR / "state_boundary_lite.fgb"
+_DISTRICT_FGB = _DATA_DIR / "district_boundary_lite.fgb"
 
-def join_with_boundaries(
-    points_gdf: gpd.GeoDataFrame,
-    districts: gpd.GeoDataFrame,
+_STATE_CANDIDATES = ["STATE", "STATE_UT", "ST_NM", "STATE_NAME", "STNAME", "NAME"]
+_DISTRICT_CANDIDATES = [
+    "DISTRICT", "DIST_NEW", "DISTRICT_N",
+    "DT_NAME", "DIST_ROMAN", "dtname", "NAME",
+]
+
+
+def _find_name_col(gdf: gpd.GeoDataFrame, candidates: list, label: str) -> str:
+    col = next((c for c in candidates if c in gdf.columns), None)
+    if col is None:
+        raise ValueError(
+            f"No {label} name column found. "
+            f"Columns present: {list(gdf.columns)}"
+        )
+    return col
+
+
+def _ensure_wgs84(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    if gdf.crs is None:
+        gdf = gdf.set_crs(epsg=4326)
+    elif gdf.crs.to_epsg() != 4326:
+        gdf = gdf.to_crs(epsg=4326)
+    gdf["geometry"] = gdf["geometry"].buffer(0)
+    return gdf
+
+
+def load_boundaries(state_shp: str = None, district_shp: str = None):
+    """Load state and district boundary GeoDataFrames.
+
+    Uses bundled FlatGeobuf files by default.  Pass custom shapefile/GeoPackage
+    paths to override.
+
+    Returns:
+        (states, districts, state_name_col, district_name_col)
+    """
+    state_path = state_shp or str(_STATE_FGB)
+    district_path = district_shp or str(_DISTRICT_FGB)
+
+    states = _ensure_wgs84(gpd.read_file(state_path))
+    districts = _ensure_wgs84(gpd.read_file(district_path))
+
+    state_name_col = _find_name_col(states, _STATE_CANDIDATES, "state")
+    district_name_col = _find_name_col(districts, _DISTRICT_CANDIDATES, "district")
+
+    return states, districts, state_name_col, district_name_col
+
+
+def build_india_outline(states: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    geom = states.unary_union
+    return gpd.GeoDataFrame({"geometry": [geom]}, crs=states.crs)
+
+
+def _get_col_safe(joined: gpd.GeoDataFrame, col: str):
+    shp_col = f"{col}_shp"
+    if shp_col in joined.columns:
+        return joined[shp_col].values
+    if col in joined.columns:
+        return joined[col].values
+    return [None] * len(joined)
+
+
+def spatial_join(
+    df,
+    lat_col: str,
+    lon_col: str,
     states: gpd.GeoDataFrame,
-    district_name_col: str,
+    districts: gpd.GeoDataFrame,
     state_name_col: str,
+    district_name_col: str,
 ) -> gpd.GeoDataFrame:
-    """
-    Spatially join points with district and state boundaries.
+    """Attach state and district names to each point via spatial join."""
+    geometry = [Point(xy) for xy in zip(df[lon_col], df[lat_col])]
+    points = gpd.GeoDataFrame(df.copy(), geometry=geometry, crs="EPSG:4326")
 
-    Adds district and state name columns to each point.
-
-    Parameters
-    ----------
-    points_gdf : GeoDataFrame
-        All points (cases + controls).
-    districts : GeoDataFrame
-        District boundary GeoDataFrame.
-    states : GeoDataFrame
-        State boundary GeoDataFrame.
-    district_name_col : str
-        Column name for district names in districts GeoDataFrame.
-    state_name_col : str
-        Column name for state names in states GeoDataFrame.
-
-    Returns
-    -------
-    GeoDataFrame with added district and state name columns.
-    """
-
-    print("[spotmap] Performing spatial join...")
-
-    # Join with districts
-    points_district = gpd.sjoin(
-        points_gdf,
+    joined_district = gpd.sjoin(
+        points,
         districts[[district_name_col, "geometry"]],
         how="left",
         predicate="within",
@@ -58,9 +96,8 @@ def join_with_boundaries(
         rsuffix="_shp",
     ).drop(columns=["index_right"], errors="ignore")
 
-    # Join with states
-    points_state = gpd.sjoin(
-        points_gdf,
+    joined_state = gpd.sjoin(
+        points,
         states[[state_name_col, "geometry"]],
         how="left",
         predicate="within",
@@ -68,83 +105,28 @@ def join_with_boundaries(
         rsuffix="_shp",
     ).drop(columns=["index_right"], errors="ignore")
 
-    # Merge results back into one GeoDataFrame
-    result = points_gdf.copy()
-    result[district_name_col] = _get_joined_column(points_district, district_name_col)
-    result[state_name_col]    = _get_joined_column(points_state, state_name_col)
-
-    print("[spotmap] Spatial join complete.")
+    result = points.copy()
+    result[district_name_col] = _get_col_safe(joined_district, district_name_col)
+    result[state_name_col] = _get_col_safe(joined_state, state_name_col)
     return result
 
 
-# =========================================================
-# PUBLIC: SPLIT CASES / CONTROLS
-# =========================================================
-
-def split_cases_controls(
-    points_gdf: gpd.GeoDataFrame,
-) -> tuple:
-    """
-    Split joined GeoDataFrame into cases and controls.
-
-    Parameters
-    ----------
-    points_gdf : GeoDataFrame
-        Joined GeoDataFrame with _is_case column.
-
-    Returns
-    -------
-    tuple: (cases GeoDataFrame, controls GeoDataFrame)
-    """
-    cases    = points_gdf[points_gdf["_is_case"]].copy()
-    controls = points_gdf[~points_gdf["_is_case"]].copy()
-
-    if cases.empty:
-        raise NoDataError(
-            "No case points found after spatial join. "
-            "Check that your coordinates fall within India boundaries."
-        )
-
-    return cases, controls
-
-
-# =========================================================
-# PUBLIC: MAP MODE DETECTION
-# =========================================================
-
-def detect_map_mode(
+def determine_mode(
     points_cases: gpd.GeoDataFrame,
     district_name_col: str,
     state_name_col: str,
-    count_cutoff: int = 5,
-) -> str:
+    count_cutoff: int = 2,
+):
+    """Determine map mode: 'districts', 'states', or 'india'.
+
+    Returns:
+        (mode, affected_districts, unique_states, bounds_array)
     """
-    Detect the appropriate map mode based on how many
-    districts and states are affected.
+    affected_districts = points_cases[district_name_col].dropna().unique()
+    unique_states = points_cases[state_name_col].dropna().unique()
 
-    Modes:
-      - 'districts' → few districts affected (zooms to district level)
-      - 'states'    → multiple states affected (zooms to state level)
-      - 'india'     → many states affected (national view)
-
-    Parameters
-    ----------
-    points_cases : GeoDataFrame
-        Case points only.
-    district_name_col : str
-        Column name for district names.
-    state_name_col : str
-        Column name for state names.
-    count_cutoff : int
-        Threshold for switching between modes.
-
-    Returns
-    -------
-    str: 'districts', 'states', or 'india'
-    """
-
-    num_districts = points_cases[district_name_col].nunique()
-    num_states    = points_cases[state_name_col].nunique()
+    num_districts = len(affected_districts)
+    num_states = len(unique_states)
 
     if 0 < num_districts <= count_cutoff:
         mode = "districts"
@@ -153,92 +135,17 @@ def detect_map_mode(
     else:
         mode = "states"
 
-    print(f"[spotmap] Mode: {mode} | Districts: {num_districts} | States: {num_states}")
-    return mode
-
-
-# =========================================================
-# PUBLIC: BOUNDARY PREPARATION
-# =========================================================
-
-def prepare_boundaries(
-    points_cases: gpd.GeoDataFrame,
-    districts: gpd.GeoDataFrame,
-    states: gpd.GeoDataFrame,
-    district_name_col: str,
-    state_name_col: str,
-    margin_deg: float = 1.0,
-):
-    """
-    Prepare cropped boundary layers for rendering.
-
-    Returns only the boundaries relevant to the affected area,
-    cropped with a margin for cleaner map display.
-
-    Parameters
-    ----------
-    points_cases : GeoDataFrame
-        Case points only.
-    districts : GeoDataFrame
-        Full district boundary GeoDataFrame.
-    states : GeoDataFrame
-        Full state boundary GeoDataFrame.
-    district_name_col : str
-        Column name for district names.
-    state_name_col : str
-        Column name for state names.
-    margin_deg : float
-        Margin in degrees to add around the bounding box.
-
-    Returns
-    -------
-    dict with keys:
-        india_outline, affected_states, affected_districts,
-        bounds, unique_states_count, unique_districts_count
-    """
-
-    affected_district_names = points_cases[district_name_col].dropna().unique()
-    affected_state_names    = points_cases[state_name_col].dropna().unique()
-
-    affected_states    = states[states[state_name_col].isin(affected_state_names)].copy()
-    affected_districts = districts[districts[district_name_col].isin(affected_district_names)].copy()
-
-    # India outline
-    india_geom    = states.unary_union
-    india_outline = gpd.GeoDataFrame({"geometry": [india_geom]}, crs=states.crs)
-
-    # Bounding box of cases
     bounds = np.array(points_cases.total_bounds, dtype=float)
-
-    def crop(gdf):
-        if gdf is None or gdf.empty or not np.isfinite(bounds).all():
-            return gdf
-        minx, miny, maxx, maxy = bounds
-        sub = gdf.cx[
-            minx - margin_deg : maxx + margin_deg,
-            miny - margin_deg : maxy + margin_deg,
-        ]
-        return sub if not sub.empty else gdf
-
-    return {
-        "india_outline":       crop(india_outline),
-        "affected_states":     crop(affected_states),
-        "affected_districts":  crop(affected_districts),
-        "bounds":              bounds,
-        "unique_states_count":    points_cases[state_name_col].nunique(),
-        "unique_districts_count": points_cases[district_name_col].nunique(),
-    }
+    return mode, affected_districts, unique_states, bounds
 
 
-# =========================================================
-# INTERNAL HELPERS
-# =========================================================
-
-def _get_joined_column(joined_df, col_name):
-    """Safely extract joined column, handling _shp suffix."""
-    shp_col = f"{col_name}_shp"
-    if shp_col in joined_df.columns:
-        return joined_df[shp_col].values
-    if col_name in joined_df.columns:
-        return joined_df[col_name].values
-    return [None] * len(joined_df)
+def crop_geodataframe(
+    gdf: gpd.GeoDataFrame, bounds: np.ndarray, margin: float = 1.0
+) -> gpd.GeoDataFrame:
+    if gdf is None or gdf.empty:
+        return gdf
+    if not np.isfinite(bounds).all():
+        return gdf
+    minx, miny, maxx, maxy = bounds
+    sub = gdf.cx[minx - margin : maxx + margin, miny - margin : maxy + margin]
+    return sub if not sub.empty else gdf
