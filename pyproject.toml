@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "spotmap"
-version = "0.1.0"
+version = "0.1.1"
 description = "Interactive epidemiological spot maps for India"
 readme = "README.md"
 license = { file = "LICENSE" }

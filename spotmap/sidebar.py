@@ -218,7 +218,8 @@ window.addEventListener('load', function() {{
 
   var sidebar = document.getElementById('map-sidebar');
   var toggleBtn = document.getElementById('sidebar-toggle-btn');
-  var sidebarOpen = false;
+  var sidebarOpen = true;
+  sidebar.classList.add('open');
 
   toggleBtn.addEventListener('click', function() {{
     sidebarOpen = !sidebarOpen;
@@ -289,6 +290,7 @@ window.addEventListener('load', function() {{
       }} else {{
         if (mapObj.hasLayer(pinsControlsLayer)) mapObj.removeLayer(pinsControlsLayer);
       }}
+      redrawPins();
     }}
     updateLegend();
   }}

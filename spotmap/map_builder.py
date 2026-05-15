@@ -1,6 +1,7 @@
 """Main SpotMap class — orchestrates loading, spatial join, and map building."""
 
 import folium
+import pandas as pd
 
 from .exceptions import NoCasePointsError
 from .layers import add_boundary_layers, add_marker_layers
@@ -24,8 +25,8 @@ class SpotMap:
 
     Parameters
     ----------
-    csv_path:
-        Path to the CSV file containing point data.
+    data:
+        Path to a CSV file **or** a pandas DataFrame containing point data.
     state_shp:
         Optional path to a custom state boundary file (shapefile / GeoPackage /
         FlatGeobuf).  Defaults to the bundled India state boundaries.
@@ -34,7 +35,7 @@ class SpotMap:
         bundled India district boundaries.
     lat_col:
         Column name for latitude.  Auto-detected when omitted.
-    lon_col:
+    long_col:
         Column name for longitude.  Auto-detected when omitted.
     outcome_col:
         Column name for the case/control outcome.  Auto-detected when omitted.
@@ -57,12 +58,12 @@ class SpotMap:
 
     def __init__(
         self,
-        csv_path: str,
+        data,
         *,
         state_shp: str = None,
         district_shp: str = None,
         lat_col: str = None,
-        lon_col: str = None,
+        long_col: str = None,
         outcome_col: str = None,
         case_value: str = None,
         count_cutoff: int = 2,
@@ -71,11 +72,13 @@ class SpotMap:
         case_color: str = _DEFAULT_CASE_COLOR,
         control_color: str = _DEFAULT_CONTROL_COLOR,
     ):
-        self.csv_path = csv_path
+        if not isinstance(data, (str, pd.DataFrame)):
+            raise TypeError("data must be a file path (str) or a pandas DataFrame.")
+        self.data = data
         self.state_shp = state_shp
         self.district_shp = district_shp
         self.lat_col = lat_col
-        self.lon_col = lon_col
+        self.long_col = long_col
         self.outcome_col = outcome_col
         self.case_value = case_value
         self.count_cutoff = count_cutoff
@@ -95,11 +98,11 @@ class SpotMap:
 
         Returns *self* so calls can be chained: ``SpotMap(...).build().save(...)``.
         """
-        # 1. Load CSV
-        df, lat_col, lon_col, outcome_col, case_value = load_csv(
-            self.csv_path,
+        # 1. Load data (path or DataFrame)
+        df, lat_col, long_col, outcome_col, case_value = load_csv(
+            self.data,
             lat_col=self.lat_col,
-            lon_col=self.lon_col,
+            long_col=self.long_col,
             outcome_col=self.outcome_col,
             case_value=self.case_value,
         )
@@ -112,7 +115,7 @@ class SpotMap:
 
         # 3. Spatial join
         points_joined = spatial_join(
-            df, lat_col, lon_col, states, districts, state_name_col, district_name_col
+            df, lat_col, long_col, states, districts, state_name_col, district_name_col
         )
 
         # 4. Split cases / controls

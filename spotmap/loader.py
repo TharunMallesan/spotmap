@@ -56,16 +56,16 @@ def _detect_from_combined(df: pd.DataFrame, col: str):
     return pd.Series(lat, index=df.index), pd.Series(lon, index=df.index)
 
 
-def detect_lat_lon(df: pd.DataFrame, lat_col: str = None, lon_col: str = None):
-    """Return (lat_col_name, lon_col_name) after detection or validation."""
+def detect_lat_lon(df: pd.DataFrame, lat_col: str = None, long_col: str = None):
+    """Return (lat_col_name, long_col_name) after detection or validation."""
     cols = list(df.columns)
 
     # User-supplied — validate they exist
-    if lat_col and lon_col:
-        missing = [c for c in (lat_col, lon_col) if c not in cols]
+    if lat_col and long_col:
+        missing = [c for c in (lat_col, long_col) if c not in cols]
         if missing:
             raise ColumnNotFoundError(f"Columns not found in CSV: {missing}")
-        return lat_col, lon_col
+        return lat_col, long_col
 
     # Combined column?
     for col in cols:
@@ -94,7 +94,7 @@ def detect_lat_lon(df: pd.DataFrame, lat_col: str = None, lon_col: str = None):
 
     raise ColumnNotFoundError(
         f"Could not auto-detect lat/lon columns. Available columns: {cols}. "
-        "Pass lat_col and lon_col explicitly."
+        "Pass lat_col and long_col explicitly."
     )
 
 
@@ -133,19 +133,26 @@ def detect_outcome(df: pd.DataFrame, outcome_col: str = None, case_value: str = 
 
 
 def load_csv(
-    path: str,
+    data,
     lat_col: str = None,
-    lon_col: str = None,
+    long_col: str = None,
     outcome_col: str = None,
     case_value: str = None,
 ) -> tuple:
-    """Load and prepare the points CSV.
+    """Load and prepare the points data from a file path or DataFrame.
 
     Returns:
-        (df, lat_col, lon_col, outcome_col, case_value)
+        (df, lat_col, long_col, outcome_col, case_value)
     """
-    df = pd.read_csv(path)
-    lat_col, lon_col = detect_lat_lon(df, lat_col, lon_col)
+    if isinstance(data, pd.DataFrame):
+        df = data.copy()
+    else:
+        df = pd.read_csv(data)
+
+    # Strip whitespace from column names
+    df.columns = df.columns.str.strip()
+
+    lat_col, long_col = detect_lat_lon(df, lat_col, long_col)
 
     outcome_col, case_value = detect_outcome(df, outcome_col, case_value)
 
@@ -153,4 +160,4 @@ def load_csv(
         df[outcome_col].astype(str).str.strip().str.lower().replace({"nan": np.nan})
     )
 
-    return df, lat_col, lon_col, outcome_col, case_value
+    return df, lat_col, long_col, outcome_col, case_value
